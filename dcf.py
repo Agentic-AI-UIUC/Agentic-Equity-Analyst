@@ -7,6 +7,7 @@ from langchain.tools import tool
 from typing import List, Dict
 import yfinance as yf
 
+#pratibaa was here lol. just checking to make sure this thing is connected to main or whatevs. HI person reading this!
 # ---------------------- ENV + EMBEDDINGS ---------------------- #
 load_dotenv()
 
