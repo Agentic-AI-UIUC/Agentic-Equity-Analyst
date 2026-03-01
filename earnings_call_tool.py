@@ -1,7 +1,6 @@
 """Live-fetch earnings call transcript analysis using FMP API and GPT-4o."""
 
 import os
-import re
 
 import requests
 from dotenv import load_dotenv
@@ -50,52 +49,36 @@ Distinguish executive statements from analyst questions. Include speaker names."
     return model.invoke(messages).content
 
 
-def _extract_ticker(text: str) -> str | None:
-    """Return the first 1-5 uppercase letter sequence that looks like a ticker."""
-    match = re.search(r'\b([A-Z]{1,5})\b', text)
-    return match.group(1) if match else None
-
-
-def _extract_year(text: str) -> int:
-    """Return the first 4-digit year found in the text, defaulting to current year."""
-    match = re.search(r'\b(20\d{2})\b', text)
-    return int(match.group(1)) if match else 2025
-
-
 @tool
-def analyze_earnings_calls(query: str) -> str:
+def analyze_earnings_calls(ticker: str, year: str) -> str:
     """
     Analyze earnings call transcripts for executive commentary and analyst Q&A.
     Extracts forward-looking guidance, management sentiment, and analyst concerns.
     Distinguishes CEO/CFO prepared remarks from analyst questions.
-    Takes a query string that should include the company ticker and topic of interest.
+    Takes two arguments: the ticker symbol (e.g. 'NVDA') and the year (formatted as 'XXXX').
     """
     try:
-        ticker = _extract_ticker(query)
-        if not ticker:
-            return "Could not extract a ticker symbol from the query. Include the ticker (e.g. NVDA) in your query."
-
-        year = _extract_year(query)
+        year_int = int(year)
 
         for quarter in [4, 3, 2, 1]:
-            transcript = fetch_transcript(ticker, year, quarter)
+            transcript = fetch_transcript(ticker, year_int, quarter)
             if transcript:
                 content = transcript.get("content", "")
                 if not content:
                     continue
                 header = f"## Earnings Call Analysis: {ticker} Q{quarter} {year}\n\n"
-                return header + analyze_transcript(content, query)
+                return header + analyze_transcript(content, f"{ticker} {year} earnings")
 
         # Try previous year as fallback
         for quarter in [4, 3, 2, 1]:
-            transcript = fetch_transcript(ticker, year - 1, quarter)
+            transcript = fetch_transcript(ticker, year_int - 1, quarter)
             if transcript:
                 content = transcript.get("content", "")
                 if not content:
                     continue
-                header = f"## Earnings Call Analysis: {ticker} Q{quarter} {year - 1}\n\n"
-                return header + analyze_transcript(content, query)
+                header = f"## Earnings Call Analysis: {ticker} Q{quarter} {year_int - 1}\n\n"
+                return header + analyze_transcript(content, f"{ticker} {year_int - 1} earnings")
 
-        return f"No earnings call transcript found for {ticker} in {year} or {year - 1}."
+        return f"No earnings call transcript found for {ticker} in {year} or {year_int - 1}."
     except Exception as e:
         return f"Error analyzing earnings calls: {e}"
