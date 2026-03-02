@@ -73,6 +73,43 @@ def get_daily_yf(company: str, symbol: str):
 def get_daily_yf_tool(company: str, symbol: str):
     """
     Get financial ticker data for a given company within the last day
-    Takes company name and its ticker as the arguments 
+    Takes company name and its ticker as the arguments
     """
     return get_daily_yf(company, symbol)
+
+@tool
+def calculate_moving_average_tool(ticker: str, days: int = 365) -> str:
+    """
+    Calculate the moving average for a given stock ticker over a specified number of days.
+    Defaults to 365 days if not specified.
+
+    Args:
+        ticker: Stock ticker symbol (e.g., AAPL, MSFT)
+        days: Number of days for moving average calculation (default: 365)
+
+    Returns:
+        Formatted string with the moving average value
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        end_date = date.today()
+        # Add buffer days to account for weekends/holidays
+        start_date = end_date - timedelta(days=days + 100)
+
+        hist = stock.history(start=start_date, end=end_date)
+
+        if hist.empty:
+            return f"Error: No data found for ticker {ticker}"
+
+        if len(hist) < days:
+            actual_days = len(hist)
+            moving_avg = hist['Close'].mean()
+            return f"Warning: Only {actual_days} days of data available. Moving average for period of last {actual_days} days: ${moving_avg:.2f}"
+
+        # Calculate moving average using the most recent 'days' closing prices
+        moving_avg = hist['Close'].tail(days).mean()
+
+        return f"Moving average for period of last {days} days: ${moving_avg:.2f}"
+
+    except Exception as e:
+        return f"Error calculating moving average for {ticker}: {str(e)}"

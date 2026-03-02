@@ -11,7 +11,6 @@ from streamlit.web import cli as stcli
 
 APP_PATH = "streamlit_app.py"
 
-
 def report(
     content: str,
     *,

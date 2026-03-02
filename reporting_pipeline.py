@@ -12,6 +12,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langchain.tools import tool
+from market_data_loader import calculate_moving_average_tool
 from pdf_builder import report
 from valuation_agent import valuation_tool
 
@@ -32,6 +33,7 @@ You have access to these tools:
 - analyze_financials: retrieve financial ticker data for a company.
 - valuation_tool: summarize equity research valuation commentary for a company and year.
 - analyze_news: extract recent qualitative signals from news coverage.
+- calculate_moving_average_tool: calculate the 365-day moving average for a stock ticker.
 
 Return accurate, concise, data-driven guidance.
 """
@@ -43,6 +45,7 @@ reporting_tools = [
     analyze_news,
     valuation_tool,
     find_dcf_tool,
+    calculate_moving_average_tool,
 ]
 
 reporting_agent = agents.create_agent(
