@@ -1,3 +1,8 @@
+---
+name: run-equity-analysis
+description: Run a full equity research analysis for a company. Use when the user asks to analyze, research, or generate a report for a stock or company.
+---
+
 # Run Equity Analysis
 
 Run a full equity research analysis for a company using the agentic pipeline.

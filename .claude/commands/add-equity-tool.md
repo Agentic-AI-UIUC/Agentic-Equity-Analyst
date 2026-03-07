@@ -1,3 +1,8 @@
+---
+name: add-equity-tool
+description: Scaffold a new LangChain tool for the reporting agent. Use when the user wants to add a new tool, capability, or data source to the equity analyst.
+---
+
 # Add Equity Tool
 
 Scaffold a new LangChain tool for the reporting agent.

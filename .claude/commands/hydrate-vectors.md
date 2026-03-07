@@ -1,3 +1,8 @@
+---
+name: hydrate-vectors
+description: Populate ChromaDB vector stores for a ticker before analysis. Use when the user asks to load, embed, or hydrate data for a company or ticker.
+---
+
 # Hydrate Vector Stores
 
 Populate ChromaDB vector stores for a given ticker before running analysis.
