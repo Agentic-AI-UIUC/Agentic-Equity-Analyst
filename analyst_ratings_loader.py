@@ -27,29 +27,37 @@ def rating_to_label(score):
         return "Strong Sell"
 
 
-def get_recent_changes(recommendations, days=100):
+def get_recent_changes(upgrades_downgrades, days=30):
     """
     Extract recent upgrades/downgrades.
     """
-    if recommendations is None or recommendations.empty:
+    if upgrades_downgrades is None or upgrades_downgrades.empty:
         return []
 
-    if not isinstance(recommendations.index, pd.DatetimeIndex):
+    if not isinstance(upgrades_downgrades.index, pd.DatetimeIndex):
         try:
-            now = pd.Timestamp.now()
-            recommendations.index = recommendations.index.map(lambda i: now - pd.DateOffset(months=int(i)))
-
+            #now = pd.Timestamp.now()
+            #upgrades_downgrades.index = upgrades_downgrades.index.map(lambda i: now - pd.DateOffset(months=int(i)))
+            pd.to_datetime(upgrades_downgrades.index)
         except:
             return []
         
     cutoff = datetime.now() - timedelta(days=days)
-    recent = recommendations[
-        recommendations.index >= cutoff
+    recent = upgrades_downgrades[
+        upgrades_downgrades.index >= cutoff
     ]
 
     changes = []
 
     # Need to implement
+    for date, row in recent.iterrows():
+        changes.append({
+            "date": date.strftime("%Y-%m-%d"),
+            "firm": row.get("Firm", "Unknown"),
+            "action": row.get("Action", ""),
+            "from": row.get("FromGrade", ""),
+            "to": row.get("ToGrade", "")
+        })
 
     return changes
 
@@ -67,6 +75,7 @@ def load_analyst_ratings(ticker):
     try:
         consensus = info.get("recommendationMean")
         num_analysts = info.get("numberOfAnalystOpinions")
+        upgrades_downgrades = stock.get_upgrades_downgrades()
 
         data = {
             "ticker": ticker,
@@ -76,7 +85,7 @@ def load_analyst_ratings(ticker):
             "price_target_high": info.get("targetHighPrice"),
             "price_target_low": info.get("targetLowPrice"),
             "num_analysts": num_analysts,
-            "recent_changes": get_recent_changes(recs)
+            "recent_changes": get_recent_changes(upgrades_downgrades)
         }
 
         return data
