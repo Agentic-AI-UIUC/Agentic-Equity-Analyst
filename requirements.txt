@@ -14,4 +14,5 @@ chromadb
 yfinance
 pandas
 streamlit
+scikit-learn
 
