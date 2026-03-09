@@ -12,7 +12,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langchain.tools import tool
-from market_data_loader import calculate_moving_average_tool
+from market_data_loader import calculate_moving_average_tool, calculate_trend_regime_tool
 from pdf_builder import report
 from valuation_agent import valuation_tool
 
@@ -34,6 +34,7 @@ You have access to these tools:
 - valuation_tool: summarize equity research valuation commentary for a company and year.
 - analyze_news: extract recent qualitative signals from news coverage.
 - calculate_moving_average_tool: calculate the 365-day moving average for a stock ticker.
+- calculate_trend_regime_tool: analyze the trend regime using 50-day and 200-day moving averages to determine if the stock is in a bullish, bearish, or neutral trend.
 
 Return accurate, concise, data-driven guidance.
 """
@@ -46,6 +47,7 @@ reporting_tools = [
     valuation_tool,
     find_dcf_tool,
     calculate_moving_average_tool,
+    calculate_trend_regime_tool,
 ]
 
 reporting_agent = agents.create_agent(

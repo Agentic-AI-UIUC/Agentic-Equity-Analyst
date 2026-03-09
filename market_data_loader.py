@@ -113,3 +113,65 @@ def calculate_moving_average_tool(ticker: str, days: int = 365) -> str:
 
     except Exception as e:
         return f"Error calculating moving average for {ticker}: {str(e)}"
+
+@tool
+def calculate_trend_regime_tool(ticker: str) -> str:
+    """
+    Calculate the trend regime for a given stock ticker based on 50-day and 200-day moving averages.
+
+    Determines if the stock is in a bullish or bearish trend based on:
+    - Bullish: 50-day MA > 200-day MA AND current price > 200-day MA
+    - Bearish: 50-day MA < 200-day MA AND current price < 200-day MA
+    - Neutral: Any other combination
+
+    Args:
+        ticker: Stock ticker symbol (e.g., AAPL, MSFT)
+
+    Returns:
+        Formatted string with trend regime analysis including current price, 50-day MA, 200-day MA, and trend determination
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        end_date = date.today()
+        # Fetch enough data to calculate 200-day MA (add buffer for weekends/holidays)
+        start_date = end_date - timedelta(days=300)
+
+        hist = stock.history(start=start_date, end=end_date)
+
+        if hist.empty:
+            return f"Error: No data found for ticker {ticker}"
+
+        if len(hist) < 200:
+            return f"Error: Insufficient data for trend regime analysis. Need at least 200 days, only {len(hist)} days available."
+
+        # Get current price (most recent close)
+        current_price = hist['Close'].iloc[-1]
+
+        # Calculate 50-day moving average
+        ma_50 = hist['Close'].tail(50).mean()
+
+        # Calculate 200-day moving average
+        ma_200 = hist['Close'].tail(200).mean()
+
+        # Determine trend regime
+        if ma_50 > ma_200 and current_price > ma_200:
+            trend = "BULLISH"
+            explanation = "The 50-day moving average is above the 200-day moving average, and the current price is above the 200-day moving average, indicating a bullish trend."
+        elif ma_50 < ma_200 and current_price < ma_200:
+            trend = "BEARISH"
+            explanation = "The 50-day moving average is below the 200-day moving average, and the current price is below the 200-day moving average, indicating a bearish trend."
+        else:
+            trend = "NEUTRAL"
+            explanation = "The moving averages show mixed signals, indicating a neutral or transitional trend."
+
+        return (
+            f"Trend Regime Analysis for {ticker}:\n"
+            f"Current Price: ${current_price:.2f}\n"
+            f"50-day Moving Average: ${ma_50:.2f}\n"
+            f"200-day Moving Average: ${ma_200:.2f}\n"
+            f"Trend: {trend}\n"
+            f"{explanation}"
+        )
+
+    except Exception as e:
+        return f"Error calculating trend regime for {ticker}: {str(e)}"
