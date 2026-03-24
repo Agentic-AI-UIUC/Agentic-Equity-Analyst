@@ -7,6 +7,7 @@ from typing import Optional
 from analyst import analyze_filings, analyze_financials, analyze_news, analyze_parser
 from deepagents import create_deep_agent
 from dcf import find_dcf_tool
+from divergence_analyzer import analyze_divergence_tool
 from langchain import agents
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -38,11 +39,13 @@ You have access to these tools:
 - calculate_trend_regime_tool: analyze the trend regime using 50-day and 200-day moving averages to determine if the stock is in a bullish, bearish, or neutral trend.
 - calculate_rsi_tool: calculate the Relative Strength Index (RSI) to identify overbought, oversold, or neutral conditions with actionable trading advice.
 - calculate_atr_tool: calculate the Average True Range (ATR) to measure market volatility and identify quiet or volatile market conditions.
+- analyze_divergence_tool: detect divergence between technical indicators (RSI + Moving Averages) and fundamental signals (Analyst Ratings) across 1-week, 1-month, and 3-month periods to identify potential trading opportunities or risks.
 
 CRITICAL - TECHNICAL ANALYSIS INTEGRATION:
 When performing technical analysis, you MUST use multiple indicators together and synthesize them into unified insights:
 
 1. ALWAYS run multiple technical indicators (RSI, ATR, Moving Averages, Trend Regime) when analyzing a stock's technical position.
+   ALSO run the analyze_divergence_tool to identify divergence between technical and fundamental signals.
 
 2. INTEGRATE the indicators to assess:
    - TREND DIRECTION (Bullish vs Bearish):
@@ -97,6 +100,7 @@ reporting_tools = [
     calculate_trend_regime_tool,
     calculate_rsi_tool,
     calculate_atr_tool,
+    analyze_divergence_tool,
 ]
 
 reporting_agent = agents.create_agent(
