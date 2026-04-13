@@ -48,12 +48,18 @@ financials = Chroma(
 model = init_chat_model("gpt-4o", model_provider="openai")
 
 
-def analyze(query, collection):
+def analyze(query, collection, k=10):
     try:
-        res = collection.similarity_search(query=query, k=10)
+        res = collection.similarity_search(query=query, k=k)
+
+        # Truncate chunks to ~1500 characters to prevent context overflow with high k
+        truncated_res = []
+        for r in res:
+            text = r.page_content if len(r.page_content) <= 1500 else r.page_content[:1500] + "... [truncated]"
+            truncated_res.append(f"Content: {text} | Metadata: {r.metadata}")
 
         messages = [SystemMessage(content="You are a professional technical financial analyst."),
-                    HumanMessage(content=f"Summarize the following data: {res[:]} . Do not repeat yourself"),
+                    HumanMessage(content=f"Summarize the following data: {truncated_res} . Do not repeat yourself"),
                     ]
         
         return model.invoke(messages).content
@@ -66,7 +72,7 @@ def analyze_filings(query):
     Fetches info relevant to what you would find in a 10-K or 10-Q filing of a company using the data fetched in the database
     Takes just one string as an argument 
     """
-    return analyze(query, filings)
+    return analyze(query, filings, k=15)
 
 @tool
 def analyze_news(query):
@@ -74,15 +80,15 @@ def analyze_news(query):
     Fetches info relevant to what you would find in the news about a company using the data fetched in the database
     Takes just one string as an argument 
     """
-    return analyze(query, news)
+    return analyze(query, news, k=10)
 
 @tool
 def analyze_parser(query):
     """
-    Fetches info relevant to what you would find in the news about a company using the data fetched in the database
-    Takes just one string as an argument 
+    Fetches comprehensive parsing data like 10-K extraction items and specific financial sections from parsed filings for a given company.
+    Takes just one string as an argument.
     """
-    return analyze(query, parser)
+    return analyze(query, parser, k=15)
 
 @tool
 def analyze_financials(query):
@@ -91,3 +97,14 @@ def analyze_financials(query):
     Takes just one string as an argument 
     """
     return analyze(query, financials)
+
+from social_sentiment_loader import analyze_social_sentiment
+
+@tool
+def analyze_social_sentiment_tool(query):
+    """
+    Fetches social media sentiment metrics, post volume, and trending topics for a stock ticker.
+    Takes just one string as an argument (the company ticker).
+    """
+    return str(analyze_social_sentiment(query))
+
