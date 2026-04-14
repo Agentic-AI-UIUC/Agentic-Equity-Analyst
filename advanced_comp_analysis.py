@@ -5,7 +5,7 @@ Extends compare_competitors with a full Competitor SWOT & White Space Analysis.
 Returns a guaranteed-valid Python dict (JSON-serialisable) — never a raw string.
 
 For the target company and each competitor:
-  1. Financial metrics (yfinance + FMP beta)
+  1. Financial metrics (yfinance)
   2. Recent news signals (yfinance / Yahoo Finance)
   3. Hiring signals (FMP historical employee count + key executives)
   4. Source-backed SWOT per company  — generated with OpenAI JSON mode
@@ -24,7 +24,7 @@ Output schema
   "metrics": {
     "<TICKER>": {
       "Price": str, "Mkt Cap ($B)": str, "P/E (TTM)": str,
-      "Fwd P/E": str, "Rev Growth": str, "Profit Margin": str, "Beta": str
+      "Fwd P/E": str, "Rev Growth": str, "Profit Margin": str
     }, ...
   },
   "swot": {
@@ -59,6 +59,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 import requests
@@ -133,18 +134,6 @@ def _fetch_metrics(ticker: str) -> dict:
         result = {label: _fmt(info.get(field), label) for label, field in YF_FIELDS.items()}
     except Exception:
         result = {label: "N/A" for label in YF_FIELDS}
-
-    # Beta from FMP (more reliable than yfinance for this field)
-    try:
-        data = requests.get(
-            f"https://financialmodelingprep.com/api/v3/profile/{ticker}",
-            params={"apikey": FMP_KEY},
-            timeout=10,
-        ).json()
-        beta = data[0].get("beta") if isinstance(data, list) and data else None
-        result["Beta"] = f"{beta:.2f}" if beta else "N/A"
-    except Exception:
-        result["Beta"] = "N/A"
 
     return result
 
@@ -336,28 +325,42 @@ def advanced_comp_analysis(target: str) -> dict:
     all_tickers = [target] + competitors
 
     print(f"[1/4] Fetching financial metrics for {all_tickers}...")
-    metrics: dict[str, dict] = {}
-    for t in all_tickers:
-        metrics[t] = _fetch_metrics(t)
+    with ThreadPoolExecutor(max_workers=len(all_tickers)) as ex:
+        futures = {ex.submit(_fetch_metrics, t): t for t in all_tickers}
+        metrics: dict[str, dict] = {}
+        for fut in as_completed(futures):
+            metrics[futures[fut]] = fut.result()
 
     print(f"[2/4] Fetching news + hiring signals...")
-    news_texts:   dict[str, str] = {}
-    hiring_texts: dict[str, str] = {}
-    for t in all_tickers:
-        print(f"       {t}...", end=" ", flush=True)
-        news_texts[t]   = _format_news(_fetch_news(t))
-        hiring_texts[t] = (
+    def _fetch_signals(t: str) -> tuple[str, str, str]:
+        news    = _format_news(_fetch_news(t))
+        hiring  = (
             f"EMPLOYEE HEADCOUNT TREND:\n{_fetch_employee_trend(t)}\n\n"
             f"KEY EXECUTIVES:\n{_fetch_executives(t)}"
         )
-        print("done")
+        return t, news, hiring
+
+    with ThreadPoolExecutor(max_workers=len(all_tickers)) as ex:
+        futures2 = {ex.submit(_fetch_signals, t): t for t in all_tickers}
+        news_texts:   dict[str, str] = {}
+        hiring_texts: dict[str, str] = {}
+        for fut in as_completed(futures2):
+            t, news, hiring = fut.result()
+            news_texts[t]   = news
+            hiring_texts[t] = hiring
+            print(f"       {t} signals done")
 
     print(f"[3/4] Generating source-backed SWOTs (JSON mode)...")
-    swot: dict[str, dict] = {}
-    for t in all_tickers:
-        print(f"       {t}...", end=" ", flush=True)
-        swot[t] = _generate_swot(t, news_texts[t], hiring_texts[t])
-        print("done")
+    with ThreadPoolExecutor(max_workers=len(all_tickers)) as ex:
+        futures3 = {
+            ex.submit(_generate_swot, t, news_texts[t], hiring_texts[t]): t
+            for t in all_tickers
+        }
+        swot: dict[str, dict] = {}
+        for fut in as_completed(futures3):
+            t = futures3[fut]
+            swot[t] = fut.result()
+            print(f"       {t} SWOT done")
 
     print(f"[4/4] Synthesising white space analysis (JSON mode)...")
     white_space = _generate_white_space(target, swot)
