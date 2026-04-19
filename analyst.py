@@ -98,13 +98,14 @@ def analyze_financials(query):
     """
     return analyze(query, financials)
 
-from social_sentiment_loader import analyze_social_sentiment
+from social_sentiment_loader import get_on_demand_sentiment
 
 @tool
-def analyze_social_sentiment_tool(query):
+def analyze_social_sentiment_tool(ticker):
     """
-    Fetches social media sentiment metrics, post volume, and trending topics for a stock ticker.
+    Fetches live social media sentiment metrics (Reddit), post volume, and trending topics for a stock ticker.
+    This tool scrapes and analyzes data on-demand if the cache is older than 24 hours.
     Takes just one string as an argument (the company ticker).
     """
-    return str(analyze_social_sentiment(query))
+    return str(get_on_demand_sentiment(ticker))
 

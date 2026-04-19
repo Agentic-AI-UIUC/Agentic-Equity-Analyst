@@ -9,19 +9,27 @@ from analyst import analyze_filings, analyze_financials
 from deepagents import create_deep_agent
 from dcf import find_dcf_tool
 from langchain_openai import ChatOpenAI
-from valuation_agent import valuation_tool
+from reporting_pipeline import reporting_tools
 
-TOOLS = [analyze_filings, find_dcf_tool, analyze_financials, valuation_tool]
+TOOLS = reporting_tools
 SYSTEM_PROMPT = """
 You are a professional financial analyst tasked with completely answering any prompts given to you.
 
-You have access to the following tools:
+You have access to the full suite of equity reporting tools, including:
 - analyze_filings
 - find_dcf_tool
 - analyze_financials
 - valuation_tool
+- analyze_news
+- get_daily_yf_tool
+- analyze_weighted_synthesis
+- calculate_moving_average_tool
+- calculate_trend_regime_tool
+- calculate_rsi_tool
+- calculate_atr_tool
+- analyze_divergence_tool
 
-Provide accurate, concise, data-driven reasoning.
+Provide accurate, concise, data-driven reasoning. Always use analyze_weighted_synthesis when performing multi-signal evaluations.
 """
 
 

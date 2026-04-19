@@ -1,10 +1,11 @@
-import os, re
+import os, re, math
+import numpy as np
 from dotenv import load_dotenv
 from openai import OpenAI
 from langchain_openai import OpenAIEmbeddings
 from langchain_chroma import Chroma
 from langchain.tools import tool
-from typing import List, Dict
+from typing import List, Dict, Any
 import yfinance as yf
 
 #pratibaa was here lol. just checking to make sure this thing is connected to main or whatevs. HI person reading this!
@@ -15,13 +16,30 @@ EMBEDDING_MODEL = "text-embedding-3-small"
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL)
 
-collection = Chroma(
-    database=os.getenv("CHROMADB"),
-    collection_name="parser_data",  # your parsed filings
-    embedding_function=embeddings,
-    chroma_cloud_api_key=os.getenv("CHROMADB_API_KEY"),
-    tenant=os.getenv("CHROMADB_TENANT"),
-)
+_COLLECTION = None
+
+def get_parser_collection():
+    global _COLLECTION
+    if _COLLECTION is not None:
+        return _COLLECTION
+    
+    db = os.getenv("CHROMADB")
+    api_key = os.getenv("CHROMADB_API_KEY")
+    tenant = os.getenv("CHROMADB_TENANT")
+    
+    if not all([db, api_key, tenant]):
+        logging.warning("ChromaDB credentials missing. Vector search in dcf.py will be unavailable.")
+        return None
+
+    from langchain_chroma import Chroma
+    _COLLECTION = Chroma(
+        database=db,
+        collection_name="parser_data",
+        embedding_function=embeddings,
+        chroma_cloud_api_key=api_key,
+        tenant=tenant,
+    )
+    return _COLLECTION
 
 
 # ---------------------- DCF FUNCTION ---------------------- #
@@ -126,6 +144,9 @@ def extract_number_with_unit(text: str, context: str = "") -> List[float]:
 
 def query_chunks(company: str, year: str, query: str, k: int = 5) -> str:
     """Query relevant text from parser_data."""
+    collection = get_parser_collection()
+    if not collection:
+        return ""
     results = collection.similarity_search(f"{company} {year} {query}", k=k)
     return " ".join([r.page_content for r in results])
 
@@ -239,3 +260,66 @@ def find_dcf_tool(company: str, year: str):
     Returns result in form of string 
     """
     return find_dcf(company, year)
+
+def get_normalized_valuation_score(ticker: str) -> Dict[str, Any]:
+    """
+    Returns a normalized valuation score (0.0-1.0) using sensitivity analysis and sigmoid mapping.
+    Includes anomaly penalties and uncertainty-adjusted confidence.
+    """
+    try:
+        inputs = get_dcf_inputs_from_yahoo(ticker)
+        
+        # 1. Sensitivity Analysis (3x3 grid)
+        base_r = inputs["discount_rate"]
+        base_g = inputs["terminal_growth_rate"]
+        
+        discount_rates = [base_r - 0.01, base_r, base_r + 0.01]
+        growth_rates = [base_g - 0.005, base_g, base_g + 0.005]
+        
+        uv_results = []
+        intrinsic_values = []
+        
+        for r in discount_rates:
+            for g in growth_rates:
+                # Ensure g < r to avoid division by zero or negative terminal value
+                actual_g = min(g, r - 0.005)
+                res = calculate_dcf(
+                    free_cash_flows=inputs["free_cash_flows"],
+                    discount_rate=r,
+                    terminal_growth_rate=actual_g,
+                    current_price=inputs["current_price"],
+                    shares_outstanding=inputs["shares_outstanding"],
+                )
+                uv_results.append(res["undervaluation_percent"])
+                intrinsic_values.append(res["intrinsic_value"])
+        
+        # 2. Distribution Stats
+        uv_pct = np.mean(uv_results)
+        std_uv = np.std(uv_results)
+        
+        # 3. Log-scale Transformation (optional but recommended to dampen extremes)
+        # uv_transformed = np.sign(uv_pct) * np.log1p(abs(uv_pct))
+        
+        # 4. Sigmoid Normalization
+        # Map: 0% -> 0.5, +15% -> 0.73, -15% -> 0.27
+        normalized = 1 / (1 + math.exp(-uv_pct / 15.0))
+        
+        # 5. Confidence Adjustment
+        # Confidence penalized by uncertainty (std_uv)
+        # 1 / (1 + std_uv / 20) * base 0.8
+        confidence = (1 / (1 + std_uv / 20.0)) * 0.8
+        
+        # 6. Anomaly Penalty
+        if abs(uv_pct) > 100:
+            confidence *= 0.5
+            
+        return {
+            "score": round(normalized, 3),
+            "confidence": round(confidence, 3),
+            "expected_uv": round(float(uv_pct), 2),
+            "uncertainty_std": round(float(std_uv), 2),
+            "intrinsic_value_mean": round(float(np.mean(intrinsic_values)), 2),
+            "current_price": inputs["current_price"]
+        }
+    except Exception as e:
+        return {"score": 0.5, "confidence": 0.0, "error": str(e)}

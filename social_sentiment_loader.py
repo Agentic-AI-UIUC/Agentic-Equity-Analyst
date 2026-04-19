@@ -16,8 +16,10 @@ import httpx
 import pytz
 from dotenv import load_dotenv
 from transformers import pipeline, AutoTokenizer
-import chromadb
-from chromadb.utils import embedding_functions
+import re
+from collections import Counter
+import math
+import numpy as np
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -49,25 +51,6 @@ class SocialSentimentLoader:
         self.sentiment_pipeline = pipeline("sentiment-analysis", model="ProsusAI/finbert", tokenizer=self.tokenizer)
         logging.info("FinBERT loaded successfully.")
 
-        self.chroma_collection_name = "social_sentiment"
-        self.persist_dir = "./chroma"
-        self._init_chroma()
-
-    def _init_chroma(self):
-        if not os.getenv("OPENAI_API_KEY"):
-            logging.error("Missing OPENAI_API_KEY in environment for Chroma embeddings. Ensure it is set.")
-            return
-        self.chroma_client = chromadb.PersistentClient(path=self.persist_dir)
-        self.ef = embedding_functions.OpenAIEmbeddingFunction(
-            api_key=os.getenv("OPENAI_API_KEY"),
-            model_name="text-embedding-3-small",
-        )
-        self.collection = self.chroma_client.get_or_create_collection(
-            name=self.chroma_collection_name,
-            embedding_function=self.ef,
-            metadata={"hnsw:space": "cosine"},
-        )
-
     async def _fetch_with_backoff(self, client: httpx.AsyncClient, url: str, max_retries: int = 3) -> httpx.Response:
         """Fetch a URL with exponential backoff on transient errors (5xx/timeouts/etc)."""
         retries = 0
@@ -92,13 +75,14 @@ class SocialSentimentLoader:
         raise Exception(f"Failed to fetch {url} after {max_retries} retries.")
 
     async def fetch_reddit_data(self, ticker: str, limit_posts: int = 5, limit_comments: int = 3) -> List[Dict[str, Any]]:
-        """Scrape Reddit asynchronously to get post data and top comments."""
+        """Scrape Reddit asynchronously with concurrent comment fetching."""
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)",
             "Accept-Language": "en-US,en;q=0.9",
         }
         
         extracted_data = []
+        semaphore = asyncio.Semaphore(3) # Limit concurrency to avoid IP blocks
 
         async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=15.0) as client:
             for sub in self.subreddits:
@@ -108,56 +92,52 @@ class SocialSentimentLoader:
                 try:
                     resp = await self._fetch_with_backoff(client, search_url)
                     if resp.status_code == 429:
-                        logging.warning("Rate limit hit (429) during search! Stopping early to avoid IP ban.")
-                        break
+                        logging.warning(f"Rate limit hit during search for {sub}!")
+                        continue
                     if resp.status_code != 200:
-                        logging.error(f"Failed to fetch {search_url}, status: {resp.status_code}")
                         continue
                     
                     data = resp.json()
                     children = data.get("data", {}).get("children", [])
-                    
-                    for child in children:
-                        post_data = child.get("data", {})
-                        permalink = post_data.get("permalink")
-                        if not permalink:
-                            continue
-                        
-                        post_id = post_data.get("id")
-                        title = post_data.get("title", "")
-                        body = post_data.get("selftext", "")
-                        url = f"https://www.reddit.com{permalink}"
-                        
-                        post_content = {
-                            "id": post_id,
-                            "title": title,
-                            "body": body,
-                            "url": url,
-                            "source": f"r/{sub}",
-                            "timestamp": post_data.get("created_utc"),
-                            "top_comments": []
-                        }
-                        
-                        comments_url = f"https://old.reddit.com{permalink}.json?sort=top&limit={limit_comments}"
-                        await asyncio.sleep(2)  # Base throttling for Reddit parsing safety
-                        
-                        c_resp = await self._fetch_with_backoff(client, comments_url)
-                        if c_resp.status_code == 429:
-                            logging.warning("Rate limit hit (429) during comment fetch! Saving what we have and aborting.")
-                            extracted_data.append(post_content)
-                            return extracted_data
-                        
-                        if c_resp.status_code == 200:
-                            c_data = c_resp.json()
-                            if isinstance(c_data, list) and len(c_data) > 1:
-                                comments_tree = c_data[1].get("data", {}).get("children", [])
-                                for c_tree in comments_tree[:limit_comments]:
-                                    cData = c_tree.get("data", {})
-                                    c_body = cData.get("body")
-                                    if c_body and c_body not in ["[deleted]", "[removed]"]:
-                                        post_content["top_comments"].append(c_body)
-                                        
-                        extracted_data.append(post_content)
+
+                    async def fetch_comments_for_post(child):
+                        async with semaphore:
+                            post_data = child.get("data", {})
+                            permalink = post_data.get("permalink")
+                            if not permalink: return None
+                            
+                            post_content = {
+                                "id": post_data.get("id"),
+                                "title": post_data.get("title", ""),
+                                "body": post_data.get("selftext", ""),
+                                "url": f"https://www.reddit.com{permalink}",
+                                "source": f"r/{sub}",
+                                "timestamp": post_data.get("created_utc"),
+                                "top_comments": []
+                            }
+                            
+                            comments_url = f"https://old.reddit.com{permalink}.json?sort=top&limit={limit_comments}"
+                            await asyncio.sleep(0.75) # Respectful throttle
+                            
+                            try:
+                                c_resp = await self._fetch_with_backoff(client, comments_url)
+                                if c_resp.status_code == 200:
+                                    c_data = c_resp.json()
+                                    if isinstance(c_data, list) and len(c_data) > 1:
+                                        comments_tree = c_data[1].get("data", {}).get("children", [])
+                                        for c_node in comments_tree[:limit_comments]:
+                                            c_body = c_node.get("data", {}).get("body")
+                                            if c_body and c_body not in ["[deleted]", "[removed]"]:
+                                                post_content["top_comments"].append(c_body)
+                            except Exception as e:
+                                logging.error(f"Error fetching comments for {permalink}: {e}")
+                            
+                            return post_content
+
+                    # Concurrent fetch for all posts in this subreddit
+                    tasks = [fetch_comments_for_post(c) for c in children]
+                    results = await asyncio.gather(*tasks)
+                    extracted_data.extend([r for r in results if r])
 
                 except Exception as e:
                     logging.error(f"Exception during extraction for {sub}: {e}")
@@ -194,24 +174,15 @@ class SocialSentimentLoader:
             logging.error(f"Sentiment analysis error: {e}")
             raise e
 
-    def process_and_store(self, ticker: str, extracted_data: List[Dict[str, Any]]) -> int:
-        """Analyze sentiments and upsert to chroma DB consistently."""
-        if not hasattr(self, 'collection'):
-            logging.error("Collection unavailable. Aborting process.")
-            return 0
-            
-        if not extracted_data:
-            logging.info("No data extracted to process.")
-            return 0
+    async def run(self, ticker: str, limit_posts: int = 5, limit_comments: int = 3) -> Dict[str, Any]:
+        """Runs the full pipeline: fetch, analyze, and aggregate."""
+        logging.info(f"Starting Social Sentiment Loader for {ticker}...")
+        extracted_data = await self.fetch_reddit_data(ticker, limit_posts, limit_comments)
         
-        documents = []
-        metadatas = []
-        ids = []
-
-        ts_insert_ny = now_ny()
-        date_retrieved = ts_insert_ny.date().isoformat()
-        time_retrieved = ts_insert_ny.strftime("%H:%M:%S")
-
+        if not extracted_data:
+            return {"ticker": ticker.upper(), "message": "No social sentiment data found."}
+            
+        results = []
         for item in extracted_data:
             combined_text = f"{item['title']}\n\n{item['body']}"
             if item['top_comments']:
@@ -219,157 +190,153 @@ class SocialSentimentLoader:
                 combined_text += f"\n\nTop Comments:\n{comments_text}"
             
             sentiment_result = self.analyze_sentiment(combined_text)
-
-            ts_pub_ny = ensure_ny_timestamp(item['timestamp'])
-            date_published = ts_pub_ny.date().isoformat()
-            time_published = ts_pub_ny.strftime("%H:%M:%S")
-
-            doctype = "social_media"
-
-            composite_key = (
-                f"{ticker.upper()}_"
-                f"{item['source']}_"
-                f"{date_published}_"
-                f"{item['id']}" # Reddit post id prevents replication 
-            )
-
-            meta = {
-                "symbol": ticker.upper(),
-                "date_retrieved": date_retrieved,
-                "time_retrieved": time_retrieved,
-                "date_published": date_published,
-                "time_published": time_published,
-                "source": item['source'],
-                "url": item['url'],
+            results.append({
+                "text": combined_text,
                 "title": item['title'],
-                "doctype": doctype,
-                "metadata_key": composite_key,
-                "finbert_label": sentiment_result["label"],
-                "finbert_score": float(sentiment_result["score"]),
-                "finbert_composite": float(sentiment_result["composite_score"])
-            }
-
-
-            documents.append(combined_text)
-            metadatas.append(meta)
-            ids.append(composite_key)
-
-        try:
-            # Replaced uuid4 append to ensure stable composite ID upsertions 
-            self.collection.upsert(documents=documents, metadatas=metadatas, ids=ids)
-            return len(ids)
-        except Exception as e:
-            logging.error(f"Failed to upsert to ChromaDB: {e}")
-            raise e
-
-    async def run(self, ticker: str, limit_posts: int = 5, limit_comments: int = 3):
-        logging.info(f"Starting Social Sentiment Loader for {ticker}...")
-        data = await self.fetch_reddit_data(ticker, limit_posts, limit_comments)
-        count = self.process_and_store(ticker, data)
-        logging.info(f"Successfully scraped and upserted {count} items for {ticker} into 'social_sentiment' collection.")
-
-
-# --- Exposing Analytical Functionality ---
-
-_CHROMA_CLIENT = None
-_EF = None
-
-def get_social_sentiment_collection():
-    global _CHROMA_CLIENT, _EF
-    import os
-    import chromadb
-    from chromadb.utils import embedding_functions
-
-    if not _CHROMA_CLIENT:
-        _CHROMA_CLIENT = chromadb.PersistentClient(path="./chroma")
-    if not _EF:
-        _EF = embedding_functions.OpenAIEmbeddingFunction(
-            api_key=os.getenv("OPENAI_API_KEY"),
-            model_name="text-embedding-3-small",
-        )
-    return _CHROMA_CLIENT.get_or_create_collection(
-        name="social_sentiment",
-        embedding_function=_EF,
-        metadata={"hnsw:space": "cosine"}
-    )
-
-def analyze_social_sentiment(ticker: str) -> Dict[str, Any]:
-    """
-    Public API callable to query stored sentiment and return aggregated metrics.
-    Retrieves the most recent documents for a ticker from ChromaDB and groups signals.
-    """
-    try:
-        from collections import Counter
-        import re
-        import os
-
-        if not os.getenv("OPENAI_API_KEY"):
-            return {"error": "Chroma database unavailable (is OPENAI_API_KEY set?)."}
+                "sentiment": sentiment_result
+            })
             
-        collection = get_social_sentiment_collection()
-        
-        # Fetch the exact matches from the DB using the metadata filter (last 7 days to keep score fresh)
-        cutoff_date = (now_ny() - dt.timedelta(days=7)).date().isoformat()
-        
-        results = collection.get(
-            where={"$and": [
-                {"symbol": ticker.upper()},
-                {"date_published": {"$gte": cutoff_date}}
-            ]}
-        )
-        
-        if not results['documents']:
-            return {"ticker": ticker.upper(), "message": f"No social sentiment data found for the last 7 days."}
-            
-        docs = results['documents']
-        metadatas = results['metadatas']
-        
-        total_composite = sum(meta.get('finbert_composite', 0.0) for meta in metadatas)
-        avg_score = total_composite / len(metadatas) if metadatas else 0.0
+        return self.aggregate_results(ticker, results)
 
-        # High level label
+    def aggregate_results(self, ticker: str, results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Aggregates individual sentiment results into a summary report."""
+        if not results:
+            return {"ticker": ticker.upper(), "message": "No data to aggregate."}
+
+        total_composite = sum(r['sentiment']['composite_score'] for r in results)
+        avg_score = total_composite / len(results)
+
         sentiment_label = "Neutral"
-        if avg_score > 0.2:
+        if avg_score > 0.15:
             sentiment_label = "Positive"
-        elif avg_score < -0.2:
+        elif avg_score < -0.15:
             sentiment_label = "Negative"
 
-        # Trending keywords extraction (excluding generic terms and formatting characters)
-        stop_words = {"the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "is", "are", "top", "comments"}
+        # Trending keywords extraction
+        stop_words = {"the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "is", "are", "top", "comments", "reddit", ticker.lower()}
         words = []
-        for d in docs:
-            cleaned = re.sub(r'[^a-zA-Z\s]', '', d.lower())
+        for r in results:
+            cleaned = re.sub(r'[^a-zA-Z\s]', '', r['text'].lower())
             tokens = [w for w in cleaned.split() if w not in stop_words and len(w) > 3]
             words.extend(tokens)
             
         common_words = [word for word, count in Counter(words).most_common(10)]
 
+        # Calculate variance/std_dev of sentiment scores
+        composite_scores = [r['sentiment']['composite_score'] for r in results]
+        std_dev = float(np.std(composite_scores)) if len(composite_scores) > 1 else 0.0
+
         return {
             "ticker": ticker.upper(),
-            "volume_tracked": len(docs),
+            "volume_tracked": len(results),
             "average_composite_score": round(avg_score, 3),
+            "sentiment_std_dev": round(std_dev, 3),
             "sentiment_label": sentiment_label,
             "trending_topics": common_words,
-            "recent_titles": [m.get('title') for m in metadatas[:3]]
+            "recent_titles": [r['title'] for r in results[:3]],
+            "timestamp": now_ny().isoformat()
         }
 
+
+# --- Exposing Analytical Functionality ---
+
+_LOADER_INSTANCE: Optional[SocialSentimentLoader] = None
+
+def get_sentiment_loader() -> SocialSentimentLoader:
+    """Singleton accessor for the SocialSentimentLoader to reuse FinBERT."""
+    global _LOADER_INSTANCE
+    if _LOADER_INSTANCE is None:
+        _LOADER_INSTANCE = SocialSentimentLoader()
+    return _LOADER_INSTANCE
+
+_SESSION_CACHE: Dict[str, Dict[str, Any]] = {}
+CACHE_EXPIRATION_HOURS = 6
+
+def get_on_demand_sentiment(ticker: str) -> Dict[str, Any]:
+    """
+    Unified entry point: Checks in-memory session cache, then scrapes if needed.
+    """
+    ticker = ticker.upper()
+    now = now_ny()
+
+    # 1. Session Cache Check
+    if ticker in _SESSION_CACHE:
+        cached_data = _SESSION_CACHE[ticker]
+        cached_time = dt.datetime.fromisoformat(cached_data["timestamp"])
+        if (now - cached_time).total_seconds() < CACHE_EXPIRATION_HOURS * 3600:
+            logging.info(f"Using session-cached social sentiment for {ticker}.")
+            return cached_data
+
+    # 2. Scrape Live
+    logging.info(f"No fresh cache for {ticker}. Running on-demand scrape...")
+    loader = get_sentiment_loader()
+    try:
+        # Run async scraper in a sync-friendly way
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+        if loop.is_running():
+            import nest_asyncio
+            nest_asyncio.apply()
+        
+        metrics = asyncio.run(loader.run(ticker, limit_posts=5, limit_comments=3))
+        
+        # 3. Store in session cache
+        if "message" not in metrics:
+            _SESSION_CACHE[ticker] = metrics
+            
+        return metrics
     except Exception as e:
-        return {"error": f"Failed compiling sentiment: {e}"}
+        logging.error(f"On-demand scrape failed: {e}")
+        return {"ticker": ticker, "error": str(e)}
+
+def get_normalized_sentiment_score(ticker: str) -> Dict[str, Any]:
+    """
+    Returns a normalized sentiment score (0.0-1.0) derived from Reddit data.
+    0.0 = Strong Negative, 0.5 = Neutral, 1.0 = Strong Positive.
+    """
+    metrics = get_on_demand_sentiment(ticker)
+    if "error" in metrics or "average_composite_score" not in metrics:
+        return {"score": 0.5, "confidence": 0.0, "details": metrics}
+    
+    raw_score = metrics["average_composite_score"]
+    # Map [-1, 1] to [0, 1] using Sigmoid-like transition or simple linear for sentiment
+    # For sentiment, keeping it (raw+1)/2 is often fine, but let's use a soft sigmoid as requested
+    normalized = 1 / (1 + math.exp(-raw_score * 5)) # Scale by 5 to make it sensitive
+    
+    # NEW: Agreement metric based on std_dev
+    std_dev = metrics.get("sentiment_std_dev", 0.5)
+    agreement = 1 - min(std_dev, 1.0)
+    
+    # NEW: Non-linear confidence curve
+    volume = metrics.get("volume_tracked", 0)
+    confidence = (1 - math.exp(-volume / 5)) * agreement
+    
+    return {
+        "score": round(normalized, 3),
+        "confidence": round(confidence, 3),
+        "raw_value": raw_score,
+        "std_dev": std_dev,
+        "label": metrics.get("sentiment_label", "Neutral")
+    }
 
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--ticker", required=True, help="Ticker symbol (e.g., AAPL)")
-    parser.add_argument("--limit-posts", type=int, default=5, help="Number of posts per subreddit")
-    parser.add_argument("--limit-comments", type=int, default=3, help="Number of top comments to retrieve per post")
+    parser.add_argument("--on-demand", action="store_true", help="Run the full on-demand flow")
     args = parser.parse_args()
 
-    loader = SocialSentimentLoader()
-    asyncio.run(loader.run(ticker=args.ticker, limit_posts=args.limit_posts, limit_comments=args.limit_comments))
+    if args.on_demand:
+        metrics = get_on_demand_sentiment(args.ticker)
+    else:
+        loader = get_sentiment_loader()
+        metrics = asyncio.run(loader.run(ticker=args.ticker))
     
-    # Showcase metrics
-    metrics = analyze_social_sentiment(args.ticker)
     import json
     print(f"\nSentiment Metrics for {args.ticker}:")
     print(json.dumps(metrics, indent=2))

@@ -14,5 +14,14 @@ chromadb
 yfinance
 pandas
 streamlit
+<<<<<<< HEAD
+transformers
+torch
+httpx
+parsel
+nest_asyncio
+hmmlearn
+=======
 scikit-learn
 
+>>>>>>> main

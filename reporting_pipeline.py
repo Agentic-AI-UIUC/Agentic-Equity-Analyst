@@ -16,6 +16,7 @@ from langchain.tools import tool
 from market_data_loader import calculate_moving_average_tool, calculate_trend_regime_tool, calculate_rsi_tool, calculate_atr_tool, get_daily_yf_tool
 from pdf_builder import report
 from valuation_agent import valuation_tool
+from synthesis_node import SynthesisNode
 
 LLM_MANAGER = init_chat_model("gpt-5.1", model_provider="openai")
 LLM_REPORTER = ChatOpenAI(model="gpt-4o", temperature=0.2, timeout=30)
@@ -45,7 +46,8 @@ CRITICAL - TECHNICAL ANALYSIS INTEGRATION:
 When performing technical analysis, you MUST use multiple indicators together and synthesize them into unified insights:
 
 1. ALWAYS run multiple technical indicators (RSI, ATR, Moving Averages, Trend Regime) when analyzing a stock's technical position.
-   ALSO run the analyze_divergence_tool to identify divergence between technical and fundamental signals.
+   ALSO run the analyze_divergence_tool to identify divergence between technical and fundamental signals. 
+   When analyzing a company, ALWAYS perform a Weighted Signal Synthesis using `analyze_weighted_synthesis` to resolve conflicting signals and provide a final high-conviction multi-horizon score relative to peers.
 
 2. INTEGRATE the indicators to assess:
    - TREND DIRECTION (Bullish vs Bearish):
@@ -97,6 +99,7 @@ reporting_tools = [
     find_dcf_tool,
     get_daily_yf_tool,
     calculate_moving_average_tool,
+    analyze_weighted_synthesis,
     calculate_trend_regime_tool,
     calculate_rsi_tool,
     calculate_atr_tool,
@@ -123,6 +126,19 @@ def _normalize_message_payload(message) -> str:
                 parts.append(str(item))
         content = "\n".join(parts)
     return str(content)
+
+
+@tool
+def analyze_weighted_synthesis(ticker: str) -> str:
+    """
+    Performs a high-conviction synthesis of multiple signals (Fundamentals, Valuation, Technicals, Sentiment).
+    Returns a structured JSON with a final score, rating, confidence, and disagreement map.
+    Use this to resolve conflicts between different data sources.
+    """
+    node = SynthesisNode()
+    result = node.calculate_synthesis(ticker)
+    import json
+    return json.dumps(result, indent=2)
 
 
 @tool

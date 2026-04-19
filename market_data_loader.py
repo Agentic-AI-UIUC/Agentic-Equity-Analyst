@@ -1,5 +1,7 @@
-import uuid, os, pytz, datetime
+import uuid, os, pytz, datetime, math
+import numpy as np
 from dotenv import load_dotenv
+from typing import Dict, Any
 import yfinance as yf
 from langchain_openai import OpenAIEmbeddings
 from langchain_chroma import Chroma
@@ -16,13 +18,29 @@ EMBEDDING_MODEL = "text-embedding-3-small"
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL)
 
-collection = Chroma(
-    database=os.getenv("CHROMADB"),
-    collection_name="financial_data", 
-    embedding_function=embeddings,
-    chroma_cloud_api_key=os.getenv("CHROMADB_API_KEY"),
-    tenant=os.getenv("CHROMADB_TENANT"),
-)
+_COLLECTION = None
+
+def get_financial_collection():
+    global _COLLECTION
+    if _COLLECTION is not None:
+        return _COLLECTION
+    
+    db = os.getenv("CHROMADB")
+    api_key = os.getenv("CHROMADB_API_KEY")
+    tenant = os.getenv("CHROMADB_TENANT")
+    
+    if not all([db, api_key, tenant]):
+        return None
+
+    from langchain_chroma import Chroma
+    _COLLECTION = Chroma(
+        database=db,
+        collection_name="financial_data",
+        embedding_function=embeddings,
+        chroma_cloud_api_key=api_key,
+        tenant=tenant,
+    )
+    return _COLLECTION
 
 
 def chunked(xs, n):
@@ -77,6 +95,11 @@ def get_daily_yf(company: str, symbol: str, days: int = 365):
         metadatas.append(meta)
         ids.append(str(uuid.uuid4()))
 
+    collection = get_financial_collection()
+    if not collection:
+        logging.error("ChromaDB not configured. Cannot add texts.")
+        return
+
     for t_chunk, m_chunk, id_chunk in zip(chunked(texts, BATCH), chunked(metadatas, BATCH), chunked(ids, BATCH)):
         collection.add_texts(texts=t_chunk, metadatas=m_chunk, ids=id_chunk)
 
@@ -130,6 +153,83 @@ def calculate_moving_average_tool(ticker: str, days: int = 365) -> str:
 
     except Exception as e:
         return f"Error calculating moving average for {ticker}: {str(e)}"
+
+
+def get_normalized_technical_score(ticker: str) -> Dict[str, Any]:
+    """
+    Returns a normalized technical score (0.0-1.0) based on multi-horizon Z-scores.
+    Uses 50d, 200d, and 365d moving averages blended: (0.5, 0.3, 0.2).
+    """
+    try:
+        import yfinance as yf
+        from datetime import date, timedelta
+        import math
+        stock = yf.Ticker(ticker)
+        
+        info = stock.info
+        current_price = info.get("currentPrice")
+        if not current_price:
+            hist = stock.history(period="1d")
+            if not hist.empty:
+                current_price = hist['Close'].iloc[-1]
+            else:
+                return {"score": 0.5, "confidence": 0.0, "error": "No price data"}
+        
+        # Get history for MA and StdDev calculations
+        end_date = date.today()
+        start_date = end_date - timedelta(days=650)
+        full_hist = stock.history(start=start_date, end=end_date)
+        
+        if full_hist.empty or len(full_hist) < 365:
+             return {
+                 "score": 0.5, 
+                 "confidence": 0.0, 
+                 "error": f"Insufficient history (need 365 days, got {len(full_hist)})"
+             }
+
+        prices = full_hist['Close']
+        
+        def calc_z_sigmoid(window: int):
+            if len(prices) < window: return 0.5, 0.0
+            subset = prices.tail(window)
+            ma = subset.mean()
+            std = subset.std()
+            if std == 0: return 0.5, 0.0
+            z = (current_price - ma) / std
+            # Map Z to (0,1) using Sigmoid
+            normalized = 1 / (1 + math.exp(-z))
+            return normalized, z, ma, std
+
+        # Calculate for each horizon
+        s_norm, s_z, s_ma, s_std = calc_z_sigmoid(50)
+        m_norm, m_z, m_ma, m_std = calc_z_sigmoid(200)
+        l_norm, l_z, l_ma, l_std = calc_z_sigmoid(365)
+        
+        # Weighted Composite Score
+        composite_score = (0.5 * s_norm) + (0.3 * m_norm) + (0.2 * l_norm)
+        
+        # Volatility & Confidence
+        # Volatility as coefficient of variation for the long horizon
+        volatility = l_std / l_ma if l_ma != 0 else 0.5
+        trend_strength = abs(l_z)
+        
+        # confidence = min(1.0, trend_strength / 3) * (1 - volatility)
+        # We cap confidence but allow it to scale with deviation
+        confidence = min(1.0, trend_strength / 3.0) * (1.0 - min(volatility * 2, 0.7))
+        
+        return {
+            "score": round(composite_score, 3),
+            "confidence": round(confidence, 3),
+            "horizons": {
+                "50d": {"score": round(s_norm, 3), "z": round(s_z, 3)},
+                "200d": {"score": round(m_norm, 3), "z": round(m_z, 3)},
+                "365d": {"score": round(l_norm, 3), "z": round(l_z, 3)}
+            },
+            "volatility": round(volatility, 3),
+            "current_price": round(float(current_price), 2)
+        }
+    except Exception as e:
+        return {"score": 0.5, "confidence": 0.0, "error": str(e)}
 
 @tool
 def calculate_trend_regime_tool(ticker: str) -> str:
@@ -338,3 +438,4 @@ def calculate_atr_tool(ticker: str, period: int = 14) -> str:
 
     except Exception as e:
         return f"Error calculating ATR for {ticker}: {str(e)}"
+
