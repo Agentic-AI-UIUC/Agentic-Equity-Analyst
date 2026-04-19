@@ -19,4 +19,4 @@ torch
 httpx
 parsel
 nest_asyncio
-
+hmmlearn
