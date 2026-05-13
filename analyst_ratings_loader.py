@@ -1,6 +1,8 @@
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
+from typing import Dict, Any
+import math
 
 def rating_to_label(score):
     """
@@ -159,3 +161,29 @@ def load_analyst_ratings(ticker):
             "ticker": ticker,
             "error": str(e)
         }
+def get_normalized_fundamental_score(ticker: str) -> dict:
+    """
+    Returns a normalized fundamental score (0.0-1.0) based on analyst consensus.
+    1.0 = Strong Buy, 0.5 = Hold, 0.0 = Strong Sell.
+    """
+    data = load_analyst_ratings(ticker)
+    if "error" in data or data.get("consensus_rating") is None:
+        return {"score": 0.5, "confidence": 0.0, "details": data}
+    
+    rating = data["consensus_rating"]
+    # Map [1.0, 5.0] to [1.0, 0.0]
+    normalized = (5.0 - rating) / 4.0
+    normalized = max(0.0, min(1.0, normalized))
+    
+    # NEW: Non-linear confidence curve
+    # 1 - exp(-N/10) means conviction hits 63% at 10 analysts, 86% at 20.
+    num_analysts = data.get("num_analysts", 0) or 0
+    confidence = 1 - math.exp(-num_analysts / 10.0)
+    
+    return {
+        "score": round(normalized, 3),
+        "confidence": round(confidence, 3),
+        "raw_value": rating,
+        "label": data.get("rating_label", "Hold"),
+        "num_analysts": num_analysts
+    }
