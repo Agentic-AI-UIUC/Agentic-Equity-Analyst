@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from analyst import analyze_filings, analyze_financials, analyze_news, analyze_parser
 from deepagents import create_deep_agent
 from dcf import find_dcf_tool
-from divergence_analyzer import analyze_divergence_tool
 from langchain import agents
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -40,13 +40,12 @@ You have access to these tools:
 - calculate_trend_regime_tool: analyze the trend regime using 50-day and 200-day moving averages to determine if the stock is in a bullish, bearish, or neutral trend.
 - calculate_rsi_tool: calculate the Relative Strength Index (RSI) to identify overbought, oversold, or neutral conditions with actionable trading advice.
 - calculate_atr_tool: calculate the Average True Range (ATR) to measure market volatility and identify quiet or volatile market conditions.
-- analyze_divergence_tool: detect divergence between technical indicators (RSI + Moving Averages) and fundamental signals (Analyst Ratings) across 1-week, 1-month, and 3-month periods to identify potential trading opportunities or risks.
 
 CRITICAL - TECHNICAL ANALYSIS INTEGRATION:
 When performing technical analysis, you MUST use multiple indicators together and synthesize them into unified insights:
 
 1. ALWAYS run multiple technical indicators (RSI, ATR, Moving Averages, Trend Regime) when analyzing a stock's technical position.
-   ALSO run the analyze_divergence_tool to identify divergence between technical and fundamental signals. 
+   ALSO run the analyze_divergence_tool to identify divergence between technical and fundamental signals.
    When analyzing a company, ALWAYS perform a Weighted Signal Synthesis using `analyze_weighted_synthesis` to resolve conflicting signals and provide a final high-conviction multi-horizon score relative to peers.
 
 2. INTEGRATE the indicators to assess:
@@ -90,6 +89,19 @@ When performing technical analysis, you MUST use multiple indicators together an
 Return accurate, concise, data-driven guidance that integrates all technical indicators into cohesive insights.
 """
 
+@tool
+def analyze_weighted_synthesis(ticker: str) -> str:
+    """
+    Performs a high-conviction synthesis of multiple signals (Fundamentals, Valuation, Technicals, Sentiment).
+    Returns a structured JSON with a final score, rating, confidence, and disagreement map.
+    Use this to resolve conflicts between different data sources.
+    """
+    node = SynthesisNode()
+    result = node.calculate_synthesis(ticker)
+    import json
+    return json.dumps(result, indent=2)
+
+
 reporting_tools = [
     analyze_filings,
     analyze_parser,
@@ -103,7 +115,6 @@ reporting_tools = [
     calculate_trend_regime_tool,
     calculate_rsi_tool,
     calculate_atr_tool,
-    analyze_divergence_tool,
 ]
 
 reporting_agent = agents.create_agent(
@@ -126,19 +137,6 @@ def _normalize_message_payload(message) -> str:
                 parts.append(str(item))
         content = "\n".join(parts)
     return str(content)
-
-
-@tool
-def analyze_weighted_synthesis(ticker: str) -> str:
-    """
-    Performs a high-conviction synthesis of multiple signals (Fundamentals, Valuation, Technicals, Sentiment).
-    Returns a structured JSON with a final score, rating, confidence, and disagreement map.
-    Use this to resolve conflicts between different data sources.
-    """
-    node = SynthesisNode()
-    result = node.calculate_synthesis(ticker)
-    import json
-    return json.dumps(result, indent=2)
 
 
 @tool
@@ -216,6 +214,35 @@ def build_prompt(
     )
 
 
+def _append_regime_section(
+    report_text: str,
+    company: str,
+    ticker: Optional[str],
+) -> str:
+    """Fetch Kalshi data and append a Market Regime Analysis section.
+
+    Returns the original report text unchanged if the Kalshi API is
+    unreachable or no data is available.
+    """
+    logger = logging.getLogger(__name__)
+    try:
+        from kalshi_client import KalshiClient
+        from market_regime import assess_regime
+        from report_regime_section import generate_regime_section
+
+        client = KalshiClient()
+        assessment = assess_regime(client)
+        section = generate_regime_section(
+            regime_assessment=assessment,
+            company_ticker=ticker.upper() if ticker else "N/A",
+            company_name=company,
+        )
+        return report_text.rstrip() + "\n" + section
+    except Exception as exc:
+        logger.warning("Market regime section skipped: %s", exc)
+        return report_text
+
+
 def generate_financial_report(
     *,
     company: str,
@@ -224,12 +251,17 @@ def generate_financial_report(
     custom_prompt: Optional[str] = None,
     launch_ui: bool = False,
     file_path: str = "report.txt",
+    include_market_regime: bool = True,
 ) -> str:
     """Run the end-to-end reporting pipeline and persist results to disk."""
 
     user_prompt = build_prompt(company, year, ticker, custom_prompt)
     condensed_prompt = _summarize_prompt(user_prompt)
     report_text = _invoke_manager(condensed_prompt)
+
+    if include_market_regime:
+        report_text = _append_regime_section(report_text, company, ticker)
+
     report(report_text, launch_ui=launch_ui, file_path=file_path)
     return report_text
 

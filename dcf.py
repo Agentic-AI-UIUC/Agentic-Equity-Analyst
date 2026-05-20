@@ -8,7 +8,7 @@ from langchain.tools import tool
 from typing import List, Dict, Any
 import yfinance as yf
 
-#pratibaa was here lol. just checking to make sure this thing is connected to main or whatevs. HI person reading this!
+#pratibaa was here lol. just checking to make sure this thing is connected to main or whatevs. HI person reading this! W work - Thomas! 
 # ---------------------- ENV + EMBEDDINGS ---------------------- #
 load_dotenv()
 

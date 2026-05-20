@@ -33,6 +33,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Launch the Streamlit viewer after the report is written.",
     )
+    parser.add_argument(
+        "--no-regime",
+        action="store_true",
+        help="Skip the Market Regime Analysis section (included by default).",
+    )
     return parser.parse_args()
 
 
@@ -45,6 +50,7 @@ def main() -> None:
         custom_prompt=args.prompt,
         file_path=args.file,
         launch_ui=args.launch_ui,
+        include_market_regime=not args.no_regime,
     )
     print("\nGenerated report saved to", Path(args.file).resolve())
     print("\nPreview:\n" + report_text[:1000])
