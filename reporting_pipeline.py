@@ -89,6 +89,19 @@ When performing technical analysis, you MUST use multiple indicators together an
 Return accurate, concise, data-driven guidance that integrates all technical indicators into cohesive insights.
 """
 
+@tool
+def analyze_weighted_synthesis(ticker: str) -> str:
+    """
+    Performs a high-conviction synthesis of multiple signals (Fundamentals, Valuation, Technicals, Sentiment).
+    Returns a structured JSON with a final score, rating, confidence, and disagreement map.
+    Use this to resolve conflicts between different data sources.
+    """
+    node = SynthesisNode()
+    result = node.calculate_synthesis(ticker)
+    import json
+    return json.dumps(result, indent=2)
+
+
 reporting_tools = [
     analyze_filings,
     analyze_parser,
@@ -124,19 +137,6 @@ def _normalize_message_payload(message) -> str:
                 parts.append(str(item))
         content = "\n".join(parts)
     return str(content)
-
-
-@tool
-def analyze_weighted_synthesis(ticker: str) -> str:
-    """
-    Performs a high-conviction synthesis of multiple signals (Fundamentals, Valuation, Technicals, Sentiment).
-    Returns a structured JSON with a final score, rating, confidence, and disagreement map.
-    Use this to resolve conflicts between different data sources.
-    """
-    node = SynthesisNode()
-    result = node.calculate_synthesis(ticker)
-    import json
-    return json.dumps(result, indent=2)
 
 
 @tool
